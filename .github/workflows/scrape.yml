@@ -2,6 +2,8 @@ name: Scrape PCC Vendor History
 
 on:
   workflow_dispatch:  # Manual trigger
+  schedule:
+    - cron: '0 */2 * * *'  # Every 2 hours
 
 jobs:
   scrape:
