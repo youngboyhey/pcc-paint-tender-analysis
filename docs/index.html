@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>政府採購標案分析 - 建築物及道路零星油漆長約工作</title>
+    <style>
+        :root {
+            --primary: #1a56db;
+            --primary-light: #e8effc;
+            --success: #059669;
+            --danger: #dc2626;
+            --gray-50: #f9fafb;
+            --gray-100: #f3f4f6;
+            --gray-200: #e5e7eb;
+            --gray-300: #d1d5db;
+            --gray-500: #6b7280;
+            --gray-700: #374151;
+            --gray-900: #111827;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft JhengHei", sans-serif;
+            background: var(--gray-50);
+            color: var(--gray-900);
+            line-height: 1.6;
+        }
+        .header {
+            background: linear-gradient(135deg, #1e3a5f, #1a56db);
+            color: white;
+            padding: 2rem 1rem;
+            text-align: center;
+        }
+        .header h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+        .header p { opacity: 0.85; font-size: 0.9rem; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 1.5rem 1rem; }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1rem;
+            margin-bottom: 2rem;
+        }
+        .stat-card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.25rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        }
+        .stat-card .label { font-size: 0.8rem; color: var(--gray-500); text-transform: uppercase; }
+        .stat-card .value { font-size: 1.8rem; font-weight: 700; color: var(--primary); margin-top: 0.25rem; }
+        .stat-card .sub { font-size: 0.75rem; color: var(--gray-500); margin-top: 0.25rem; }
+
+        .tabs {
+            display: flex;
+            gap: 0;
+            margin-bottom: 0;
+            border-bottom: 2px solid var(--gray-200);
+        }
+        .tab {
+            padding: 0.75rem 1.5rem;
+            cursor: pointer;
+            border: none;
+            background: none;
+            font-size: 0.95rem;
+            color: var(--gray-500);
+            border-bottom: 2px solid transparent;
+            margin-bottom: -2px;
+            transition: all 0.2s;
+        }
+        .tab.active {
+            color: var(--primary);
+            border-bottom-color: var(--primary);
+            font-weight: 600;
+        }
+        .tab:hover { color: var(--gray-700); }
+
+        .panel { display: none; }
+        .panel.active { display: block; }
+
+        .card {
+            background: white;
+            border-radius: 12px;
+            padding: 1.5rem;
+            margin-top: 1rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+            overflow-x: auto;
+        }
+        .card h2 {
+            font-size: 1.1rem;
+            margin-bottom: 1rem;
+            color: var(--gray-700);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+        }
+        th {
+            background: var(--gray-100);
+            padding: 0.6rem 0.75rem;
+            text-align: left;
+            font-weight: 600;
+            color: var(--gray-700);
+            white-space: nowrap;
+            position: sticky;
+            top: 0;
+        }
+        td {
+            padding: 0.6rem 0.75rem;
+            border-bottom: 1px solid var(--gray-100);
+        }
+        tr:hover td { background: var(--primary-light); }
+        .badge {
+            display: inline-block;
+            padding: 0.15rem 0.5rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        .badge-win { background: #d1fae5; color: #065f46; }
+        .badge-lose { background: #fee2e2; color: #991b1b; }
+        .amount { text-align: right; font-variant-numeric: tabular-nums; }
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: var(--gray-500);
+        }
+        .loading-spinner {
+            display: inline-block;
+            width: 2rem;
+            height: 2rem;
+            border: 3px solid var(--gray-200);
+            border-top-color: var(--primary);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .search-box {
+            margin-bottom: 1rem;
+            display: flex;
+            gap: 0.5rem;
+        }
+        .search-box input {
+            flex: 1;
+            padding: 0.5rem 1rem;
+            border: 1px solid var(--gray-300);
+            border-radius: 8px;
+            font-size: 0.9rem;
+        }
+        .search-box input:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(26,86,219,0.1); }
+
+        .vendor-link {
+            color: var(--primary);
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .vendor-link:hover { color: #1e40af; }
+
+        @media (max-width: 768px) {
+            .header h1 { font-size: 1.2rem; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            table { font-size: 0.75rem; }
+            th, td { padding: 0.4rem; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏗️ 政府採購標案分析</h1>
+        <p>建築物及道路零星油漆長約工作 ｜ 民國 105~115 年決標資料</p>
+    </div>
+
+    <div class="container">
+        <!-- Stats -->
+        <div class="stats-grid" id="statsGrid">
+            <div class="stat-card">
+                <div class="label">決標案件數</div>
+                <div class="value" id="statTenders">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">參與廠商數</div>
+                <div class="value" id="statVendors">-</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">總決標金額</div>
+                <div class="value" id="statTotal">-</div>
+                <div class="sub">新台幣</div>
+            </div>
+            <div class="stat-card">
+                <div class="label">平均決標率</div>
+                <div class="value" id="statRate">-</div>
+                <div class="sub">決標金額 / 預算金額</div>
+            </div>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" data-tab="tenders">📋 決標案件一覽</button>
+            <button class="tab" data-tab="vendors">🏢 廠商投標分析</button>
+            <button class="tab" data-tab="history">📊 廠商歷史標案</button>
+        </div>
+
+        <!-- Panel 1: Tenders -->
+        <div class="panel active" id="panel-tenders">
+            <div class="card">
+                <div class="search-box">
+                    <input type="text" id="searchTender" placeholder="🔍 搜尋標案名稱、機關、廠商...">
+                </div>
+                <div id="tenderTable" class="loading">
+                    <div class="loading-spinner"></div>
+                    <p>載入資料中...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel 2: Vendors -->
+        <div class="panel" id="panel-vendors">
+            <div class="card">
+                <div class="search-box">
+                    <input type="text" id="searchVendor" placeholder="🔍 搜尋廠商名稱...">
+                </div>
+                <div id="vendorTable" class="loading">
+                    <div class="loading-spinner"></div>
+                    <p>載入資料中...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Panel 3: Vendor History -->
+        <div class="panel" id="panel-history">
+            <div class="card">
+                <h2 id="historyTitle">點選廠商名稱查看歷史投標紀錄</h2>
+                <div class="search-box">
+                    <input type="text" id="searchHistory" placeholder="🔍 搜尋歷史標案...">
+                </div>
+                <div id="historyTable"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const SUPABASE_URL = "https://chclxcbmdzgdozldufzs.supabase.co";
+        const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNoY2x4Y2JtZHpnZG96bGR1ZnpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM5MTcwMzEsImV4cCI6MjA4OTQ5MzAzMX0.X50CLwSq1PRDDMFlsGKlSsi-n52JlZC55drAoiddo1I";
+
+        let tendersData = [];
+        let biddersData = [];
+        let vendorHistoryData = [];
+
+        // Supabase REST helper
+        async function supaFetch(table, params = "") {
+            const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${params}`, {
+                headers: { "apikey": SUPABASE_KEY, "Authorization": `Bearer ${SUPABASE_KEY}` }
+            });
+            return res.json();
+        }
+
+        function fmt(n) {
+            if (n == null) return "-";
+            return Math.round(n).toLocaleString("zh-TW");
+        }
+
+        // Tab switching
+        document.querySelectorAll(".tab").forEach(tab => {
+            tab.addEventListener("click", () => {
+                document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+                document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+                tab.classList.add("active");
+                document.getElementById(`panel-${tab.dataset.tab}`).classList.add("active");
+            });
+        });
+
+        // Render tender table
+        function renderTenders(filter = "") {
+            const filtered = tendersData.filter(t => {
+                const s = filter.toLowerCase();
+                if (!s) return true;
+                const bidderNames = biddersData.filter(b => b.tender_id === t.id).map(b => b.company_name).join(" ");
+                return (t.case_name + t.agency + t.case_no + bidderNames).toLowerCase().includes(s);
+            });
+
+            const html = `<table>
+                <thead><tr>
+                    <th>#</th><th>標案名稱</th><th>機關</th><th>預算金額</th>
+                    <th>底價金額</th><th>決標金額</th>
+                    <th>得標廠商</th><th>得標金額</th>
+                    <th>未得標廠商</th><th>標價金額</th>
+                </tr></thead>
+                <tbody>${filtered.map((t, i) => {
+                    const bidders = biddersData.filter(b => b.tender_id === t.id);
+                    const winners = bidders.filter(b => b.is_winner);
+                    const losers = bidders.filter(b => !b.is_winner);
+                    return `<tr>
+                        <td>${i + 1}</td>
+                        <td><a href="${t.detail_url || '#'}" target="_blank">${t.case_name || t.case_no}</a></td>
+                        <td>${t.agency || '-'}</td>
+                        <td class="amount">${fmt(t.budget)}</td>
+                        <td class="amount">${fmt(t.base_price)}</td>
+                        <td class="amount">${fmt(t.award_price)}</td>
+                        <td>${winners.map(w => `<span class="vendor-link" data-vendor="${w.company_name}">${w.company_name}</span>`).join('<br>') || '-'}</td>
+                        <td class="amount">${winners.map(w => fmt(w.original_bid_amount || w.bid_amount)).join('<br>') || '-'}</td>
+                        <td>${losers.map(l => `<span class="vendor-link" data-vendor="${l.company_name}">${l.company_name}</span>`).join('<br>') || '-'}</td>
+                        <td class="amount">${losers.map(l => fmt(l.bid_amount)).join('<br>') || '-'}</td>
+                    </tr>`;
+                }).join('')}</tbody>
+            </table>`;
+            document.getElementById("tenderTable").innerHTML = filtered.length ? html : '<p style="text-align:center;color:#999">無符合資料</p>';
+        }
+
+        // Render vendor summary
+        function renderVendors(filter = "") {
+            const vendorMap = {};
+            biddersData.forEach(b => {
+                if (!vendorMap[b.company_name]) {
+                    vendorMap[b.company_name] = { name: b.company_name, total: 0, wins: 0, totalBid: 0, totalWinBid: 0 };
+                }
+                vendorMap[b.company_name].total++;
+                vendorMap[b.company_name].totalBid += (b.bid_amount || 0);
+                if (b.is_winner) {
+                    vendorMap[b.company_name].wins++;
+                    vendorMap[b.company_name].totalWinBid += (b.bid_amount || 0);
+                }
+            });
+
+            let vendors = Object.values(vendorMap)
+                .filter(v => !filter || v.name.toLowerCase().includes(filter.toLowerCase()))
+                .sort((a, b) => b.wins - a.wins);
+
+            const html = `<table>
+                <thead><tr>
+                    <th>#</th><th>廠商名稱</th><th>投標次數</th><th>得標次數</th>
+                    <th>得標率</th><th>總投標金額</th><th>總得標金額</th>
+                </tr></thead>
+                <tbody>${vendors.map((v, i) => `<tr>
+                    <td>${i + 1}</td>
+                    <td><span class="vendor-link" data-vendor="${v.name}">${v.name}</span></td>
+                    <td>${v.total}</td>
+                    <td>${v.wins}</td>
+                    <td><span class="badge ${v.wins > 0 ? 'badge-win' : 'badge-lose'}">${v.total ? Math.round(v.wins/v.total*100) : 0}%</span></td>
+                    <td class="amount">${fmt(v.totalBid)}</td>
+                    <td class="amount">${fmt(v.totalWinBid)}</td>
+                </tr>`).join('')}</tbody>
+            </table>`;
+            document.getElementById("vendorTable").innerHTML = vendors.length ? html : '<p style="text-align:center;color:#999">無符合資料</p>';
+        }
+
+        // Show vendor history
+        function showVendorHistory(vendorName) {
+            // Switch to history tab
+            document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+            document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+            document.querySelector('[data-tab="history"]').classList.add("active");
+            document.getElementById("panel-history").classList.add("active");
+            document.getElementById("historyTitle").textContent = `📊 ${vendorName} - 歷史投標紀錄 (105~115年)`;
+
+            const records = vendorHistoryData.filter(h => h.vendor_name === vendorName);
+            renderHistory(records);
+        }
+
+        function renderHistory(records, filter = "") {
+            if (filter) {
+                records = records.filter(r =>
+                    (r.case_name + r.agency + r.case_no).toLowerCase().includes(filter.toLowerCase())
+                );
+            }
+            if (!records.length) {
+                document.getElementById("historyTable").innerHTML = '<p style="text-align:center;color:#999;padding:2rem">無歷史資料（請先從標案或廠商頁面點選廠商名稱）</p>';
+                return;
+            }
+            const html = `<table>
+                <thead><tr>
+                    <th>#</th><th>年度</th><th>標案名稱</th><th>機關</th>
+                    <th>預算金額</th><th>底價金額</th><th>決標金額</th><th>是否得標</th>
+                </tr></thead>
+                <tbody>${records.map((r, i) => `<tr>
+                    <td>${i + 1}</td>
+                    <td>${r.tender_year || '-'}</td>
+                    <td><a href="${r.detail_url || '#'}" target="_blank">${r.case_name || r.case_no || '-'}</a></td>
+                    <td>${r.agency || '-'}</td>
+                    <td class="amount">${fmt(r.budget)}</td>
+                    <td class="amount">${fmt(r.base_price)}</td>
+                    <td class="amount">${fmt(r.award_price)}</td>
+                    <td>${r.is_winner === true ? '<span class="badge badge-win">✅ 得標</span>' : r.is_winner === false ? '<span class="badge badge-lose">❌ 未得標</span>' : '-'}</td>
+                </tr>`).join('')}</tbody>
+            </table>`;
+            document.getElementById("historyTable").innerHTML = html;
+        }
+
+        // Update stats
+        function updateStats() {
+            document.getElementById("statTenders").textContent = tendersData.length;
+            const uniqueVendors = new Set(biddersData.map(b => b.company_name));
+            document.getElementById("statVendors").textContent = uniqueVendors.size;
+            const totalAward = tendersData.reduce((s, t) => s + (t.award_price || 0), 0);
+            document.getElementById("statTotal").textContent = `${fmt(totalAward)}元`;
+            const totalBudget = tendersData.reduce((s, t) => s + (t.budget || 0), 0);
+            document.getElementById("statRate").textContent = totalBudget ? `${Math.round(totalAward / totalBudget * 100)}%` : '-';
+        }
+
+        // Event delegation for vendor links
+        document.addEventListener("click", e => {
+            const vl = e.target.closest(".vendor-link");
+            if (vl && vl.dataset.vendor) {
+                showVendorHistory(vl.dataset.vendor);
+            }
+        });
+
+        // Search event listeners
+        document.getElementById("searchTender").addEventListener("input", e => renderTenders(e.target.value));
+        document.getElementById("searchVendor").addEventListener("input", e => renderVendors(e.target.value));
+        document.getElementById("searchHistory").addEventListener("input", e => {
+            const records = vendorHistoryData;
+            renderHistory(records, e.target.value);
+        });
+
+        // Load data
+        async function init() {
+            try {
+                [tendersData, biddersData, vendorHistoryData] = await Promise.all([
+                    supaFetch("tenders", "select=*&order=tender_year.desc"),
+                    supaFetch("bidders", "select=*"),
+                    supaFetch("vendor_history", "select=*&order=tender_year.desc"),
+                ]);
+                updateStats();
+                renderTenders();
+                renderVendors();
+                renderHistory([]);
+            } catch (e) {
+                document.getElementById("tenderTable").innerHTML = `<p style="color:red">載入失敗: ${e.message}</p>`;
+            }
+        }
+        init();
+    </script>
+</body>
+</html>

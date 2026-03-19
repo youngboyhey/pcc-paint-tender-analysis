@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.png
+debug_*.html
+.env
+scraper/output.json
+scraper/vendor_history.json
