@@ -1,0 +1,28 @@
+name: Scrape PCC Vendor History
+
+on:
+  workflow_dispatch:  # Manual trigger
+  # schedule:
+  #   - cron: '0 */2 * * *'  # Every 2 hours (uncomment if needed)
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 hour max
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install requests Pillow
+
+      - name: Run scraper
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          cd scraper
+          python auto_scrape.py
