@@ -82,9 +82,17 @@ def solve_captcha(session):
         'https://web.pcc.gov.tw/tps/validate/check',
         data=submit_data,
         headers={'Content-Type': 'application/x-www-form-urlencoded'},
-        allow_redirects=True,
+        allow_redirects=False,  # Don't follow redirect to HTTP
         timeout=15
     )
+    # Follow redirect manually with HTTPS
+    if sr.status_code in (301, 302, 303):
+        loc = sr.headers.get('Location', '')
+        if loc.startswith('http://'):
+            loc = loc.replace('http://', 'https://', 1)
+        elif loc.startswith('/'):
+            loc = 'https://web.pcc.gov.tw' + loc
+        sr = session.get(loc, timeout=15)
     return '驗證碼' not in sr.text
 
 
@@ -152,6 +160,15 @@ def main():
     # Create session and solve CAPTCHA
     session = requests.Session()
     session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    # Force HTTPS - PCC sometimes redirects to HTTP which times out
+    session.max_redirects = 5
+
+    # Warm up session with HTTPS connection first
+    try:
+        session.get('https://web.pcc.gov.tw/prkms/tender/common/bulletion/indexBulletion', timeout=15)
+        print("  Session warmed up via /prkms/")
+    except Exception as e:
+        print(f"  Warmup failed: {e}")
 
     print("Solving CAPTCHA...")
     for attempt in range(5):
@@ -187,7 +204,13 @@ def main():
             continue
 
         try:
-            r = session.get(url, allow_redirects=True, timeout=15)
+            # Ensure HTTPS
+            if url.startswith('http://'):
+                url = url.replace('http://', 'https://', 1)
+            r = session.get(url, allow_redirects=True, timeout=20)
+            # If redirected to HTTP, force HTTPS
+            if r.url.startswith('http://'):
+                r = session.get(r.url.replace('http://', 'https://', 1), timeout=20)
             html = r.text
 
             if '驗證碼' in html:
