@@ -1,115 +1,121 @@
-"""Full auto scraper: solve CAPTCHA + fetch all vendor history details"""
-import requests
+"""Full auto scraper: solve CAPTCHA + fetch all vendor history details
+Uses curl_cffi for TLS fingerprint impersonation and scipy for CAPTCHA solving."""
 import re
 import io
 import time
-import json
 import os
 from PIL import Image
+import numpy as np
+from scipy import ndimage
+
+# Use curl_cffi to impersonate Chrome (bypasses TLS fingerprint detection)
+from curl_cffi import requests
 
 SUPABASE_URL = "https://chclxcbmdzgdozldufzs.supabase.co"
 SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNoY2x4Y2JtZHpnZG96bGR1ZnpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM5MTcwMzEsImV4cCI6MjA4OTQ5MzAzMX0.X50CLwSq1PRDDMFlsGKlSsi-n52JlZC55drAoiddo1I"
+PCC_BASE = "https://web.pcc.gov.tw"
 
 
-def fetch_https(session, url, max_redirects=5):
+def fetch_https(session, url):
     """Fetch URL forcing HTTPS on all redirects."""
     if url.startswith('http://'):
         url = url.replace('http://', 'https://', 1)
-    for _ in range(max_redirects):
+    for _ in range(5):
         r = session.get(url, allow_redirects=False, timeout=20)
         if r.status_code in (301, 302, 303, 307, 308):
-            loc = r.headers.get('Location', '')
+            loc = r.headers.get('location', r.headers.get('Location', ''))
             if loc.startswith('http://'):
                 loc = loc.replace('http://', 'https://', 1)
             elif loc.startswith('/'):
-                loc = 'https://web.pcc.gov.tw' + loc
+                loc = PCC_BASE + loc
             url = loc
             continue
         return r.text
     return r.text
 
 
-def count_colored_pixels(img, x_start=0, x_end=None):
-    if x_end is None:
-        x_end = img.width
-    red = black = 0
-    for x in range(x_start, x_end):
-        for y in range(img.height):
-            px = img.getpixel((x, y))
-            rv, g, b, a = px
-            if a < 100:
-                continue
-            if rv > 180 and g < 80 and b < 80:
-                red += 1
-            elif rv < 60 and g < 60 and b < 60:
-                black += 1
-    return ('red' if red > black else 'black'), max(red, black)
+def analyze_card(img):
+    """Analyze a playing card image: detect color (red/black) and symbol count."""
+    arr = np.array(img.convert('RGBA'))
+    a = arr[:, :, 3]
+    r, g, b = arr[:, :, 0].astype(float), arr[:, :, 1].astype(float), arr[:, :, 2].astype(float)
+    red_mask = (a > 100) & (r > 150) & (g < 100) & (b < 100)
+    black_mask = (a > 100) & (r < 80) & (g < 80) & (b < 80)
+    rl, rn = ndimage.label(red_mask)
+    bl, bn = ndimage.label(black_mask)
+    rb = sum(1 for i in range(1, rn + 1) if np.sum(rl == i) > 100)
+    bb = sum(1 for i in range(1, bn + 1) if np.sum(bl == i) > 100)
+    color = 'red' if rb > bb else 'black'
+    return color, max(rb, bb), max(int(np.sum(red_mask)), int(np.sum(black_mask)))
 
 
 def solve_captcha(session):
-    """Solve PCC poker CAPTCHA using color pixel counting."""
+    """Solve PCC poker CAPTCHA using color + blob detection."""
     html = fetch_https(session,
-        'https://web.pcc.gov.tw/tps/atm/AtmAwardWithoutSso/QueryAtmAwardDetail?pkAtmMain=NTE3Njg3MDM='
-    )
+        f'{PCC_BASE}/tps/atm/AtmAwardWithoutSso/QueryAtmAwardDetail?pkAtmMain=NTE3Njg3MDM=')
     if '驗證碼' not in html:
-        return True
+        return True  # No CAPTCHA
 
     ans_match = re.search(r'(/tps/validate/init\?poker=answer[^"]*)', html)
-    q_ids = re.findall(r'/tps/validate/init\?poker=question&id=([^"&\s]+)', html)
+    q_ids = re.findall(r'/tps/validate/init\?poker=question&(?:amp;)?id=([^"&\s]+)', html)
     id_match = re.search(r'name="id"\s+value="([^"]+)"', html)
     csrf_match = re.search(r'name="_csrf"\s+value="([^"]+)"', html)
 
     if not all([ans_match, q_ids, id_match, csrf_match]):
         return False
 
-    # Download answer image
-    ans_url = 'https://web.pcc.gov.tw' + ans_match.group(1).replace('&amp;', '&')
-    answer_img = Image.open(io.BytesIO(session.get(ans_url, timeout=10).content)).convert('RGBA')
+    # Get answer image (2 cards side by side)
+    ans_url = PCC_BASE + ans_match.group(1).replace('&amp;', '&')
+    ans_img = Image.open(io.BytesIO(session.get(ans_url, timeout=10).content))
+    w, h = ans_img.width, ans_img.height
 
-    # Get answer card signatures (split image in half)
-    a1_suit, a1_count = count_colored_pixels(answer_img, 0, answer_img.width // 2)
-    a2_suit, a2_count = count_colored_pixels(answer_img, answer_img.width // 2, answer_img.width)
+    a1 = analyze_card(ans_img.crop((0, 0, w // 2, h)))
+    a2 = analyze_card(ans_img.crop((w // 2, 0, w, h)))
 
-    # Get question card signatures
+    # Get question card images
     questions = []
     for qid in q_ids:
-        q_url = f'https://web.pcc.gov.tw/tps/validate/init?poker=question&id={qid}'
-        q_img = Image.open(io.BytesIO(session.get(q_url, timeout=10).content)).convert('RGBA')
-        suit, count = count_colored_pixels(q_img)
-        questions.append((qid, suit, count))
+        q_url = f'{PCC_BASE}/tps/validate/init?poker=question&id={qid}'
+        q_img = Image.open(io.BytesIO(session.get(q_url, timeout=10).content))
+        questions.append((qid, *analyze_card(q_img)))
 
-    # Match: same suit + closest pixel count
+    # Match: same color + same symbol count (or closest)
     matches = []
     used = set()
-    for a_suit, a_count in [(a1_suit, a1_count), (a2_suit, a2_count)]:
-        candidates = [(qid, s, c) for qid, s, c in questions if s == a_suit and qid not in used]
-        if candidates:
-            best = min(candidates, key=lambda x: abs(x[2] - a_count))
+    for ac, an, ap in [a1, a2]:
+        cands = [(q, c, n, p) for q, c, n, p in questions if c == ac and n == an and q not in used]
+        if not cands:
+            cands = [(q, c, n, p) for q, c, n, p in questions if c == ac and q not in used]
+        if cands:
+            best = min(cands, key=lambda x: abs(x[3] - ap))
             matches.append(best[0])
             used.add(best[0])
 
     if len(matches) < 2:
         return False
 
-    # Submit
-    submit_data = f'choose={matches[0]}&choose={matches[1]}&id={id_match.group(1)}&_csrf={csrf_match.group(1)}'
+    # Submit CAPTCHA (don't follow redirect - it goes to HTTP)
+    data = '&'.join([f'choose={m}' for m in matches])
+    data += f'&id={id_match.group(1)}&_csrf={csrf_match.group(1)}'
     sr = session.post(
-        'https://web.pcc.gov.tw/tps/validate/check',
-        data=submit_data,
+        f'{PCC_BASE}/tps/validate/check',
+        data=data,
         headers={'Content-Type': 'application/x-www-form-urlencoded'},
-        allow_redirects=False,  # Don't follow redirect to HTTP
+        allow_redirects=False,
         timeout=15
     )
-    # Follow redirect manually with HTTPS
+
+    # Follow redirect forcing HTTPS
     if sr.status_code in (301, 302, 303):
-        loc = sr.headers.get('Location', '')
+        loc = sr.headers.get('location', sr.headers.get('Location', ''))
         if loc.startswith('http://'):
             loc = loc.replace('http://', 'https://', 1)
         elif loc.startswith('/'):
-            loc = 'https://web.pcc.gov.tw' + loc
-        sr = session.get(loc, timeout=15)
-    return '驗證碼' not in sr.text
+            loc = PCC_BASE + loc
+        r2 = session.get(loc, timeout=15)
+        return '預算金額' in r2.text
+    return '預算金額' in sr.text
 
 
 def extract_detail(html, vendor_name):
@@ -128,19 +134,22 @@ def extract_detail(html, vendor_name):
     is_winner = None
 
     for i in range(len(tds) - 1):
-        if tds[i] == '預算金額' and budget is None:
-            budget = pa(tds[i + 1])
-        if tds[i] == '底價金額' and base_price is None:
-            base_price = pa(tds[i + 1])
-        if tds[i] == '總決標金額' and award_price is None:
-            award_price = pa(tds[i + 1])
+        l, v = tds[i], tds[i + 1]
+        if l == '預算金額' and budget is None:
+            budget = pa(v)
+        if l == '底價金額' and base_price is None:
+            base_price = pa(v)
+        if l == '總決標金額' and award_price is None:
+            award_price = pa(v)
 
-    in_sec = False
+    # Find vendor's is_winner status
+    in_section = False
     for i in range(len(tds) - 1):
-        if re.match(r'^(得標廠商|未得標廠商)\d*$', tds[i]) and tds[i + 1] == '':
-            in_sec = True
+        l, v = tds[i], tds[i + 1]
+        if re.match(r'^(得標廠商|未得標廠商)\d*$', l) and v == '':
+            in_section = True
             continue
-        if not in_sec and tds[i] == '廠商名稱' and tds[i + 1] == vendor_name:
+        if not in_section and l == '廠商名稱' and v == vendor_name:
             for j in range(i + 1, min(i + 10, len(tds) - 1)):
                 if tds[j] == '是否得標':
                     is_winner = '是' in tds[j + 1]
@@ -153,15 +162,16 @@ def extract_detail(html, vendor_name):
 
 
 def main():
+    import requests as std_requests  # For Supabase (doesn't need TLS impersonation)
+
     # Get records needing data
     headers = {'apikey': ANON_KEY, 'Authorization': f'Bearer {ANON_KEY}'}
     all_records = []
     offset = 0
     while True:
-        r = requests.get(
+        r = std_requests.get(
             f'{SUPABASE_URL}/rest/v1/vendor_history?budget=is.null&select=id,vendor_name,case_no,detail_url&order=id&offset={offset}&limit=1000',
-            headers=headers
-        )
+            headers=headers)
         data = r.json()
         all_records.extend(data)
         if len(data) < 1000:
@@ -173,18 +183,8 @@ def main():
         print("All records already have data!")
         return
 
-    # Create session and solve CAPTCHA
-    session = requests.Session()
-    session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
-    # Force HTTPS - PCC sometimes redirects to HTTP which times out
-    session.max_redirects = 5
-
-    # Warm up session with HTTPS connection first
-    try:
-        session.get('https://web.pcc.gov.tw/prkms/tender/common/bulletion/indexBulletion', timeout=15)
-        print("  Session warmed up via /prkms/")
-    except Exception as e:
-        print(f"  Warmup failed: {e}")
+    # Create curl_cffi session (Chrome impersonation)
+    session = requests.Session(impersonate='chrome')
 
     print("Solving CAPTCHA...")
     for attempt in range(5):
@@ -194,7 +194,7 @@ def main():
                 break
             else:
                 print(f"  Attempt {attempt + 1} failed, retrying...")
-                time.sleep(2)
+                time.sleep(3)
         except Exception as e:
             print(f"  Attempt {attempt + 1} error: {e}")
             time.sleep(5)
@@ -230,7 +230,6 @@ def main():
                     print(f"  [{i+1}] CAPTCHA re-solve failed, skipping")
                     errors += 1
                     continue
-                # Retry the page
                 html = fetch_https(session, url)
                 if '驗證碼' in html:
                     errors += 1
@@ -250,7 +249,7 @@ def main():
                 if data['is_winner'] is not None:
                     update['is_winner'] = data['is_winner']
                 if update:
-                    requests.patch(
+                    std_requests.patch(
                         f'{SUPABASE_URL}/rest/v1/vendor_history?id=eq.{record["id"]}',
                         headers=supa_headers,
                         json=update
@@ -260,22 +259,20 @@ def main():
             if (i + 1) % 20 == 0:
                 print(f"  [{i+1}/{len(all_records)}] ok={success} err={errors} captcha={captcha_count} | {record['case_no']}: budget={data['budget']}")
 
-        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
-            print(f"  [{i+1}] Connection error (IP blocked?), waiting 90s...")
+        except (requests.RequestsError, Exception) as e:
+            err_str = str(e)[:80]
+            if 'Connection' in err_str or 'Timeout' in err_str or 'timed out' in err_str:
+                print(f"  [{i+1}] Connection error, waiting 90s...")
+                time.sleep(90)
+                session = requests.Session(impersonate='chrome')
+                try:
+                    solve_captcha(session)
+                except Exception:
+                    pass
+            else:
+                if (i + 1) % 20 == 0:
+                    print(f"  [{i+1}] ERROR: {err_str}")
             errors += 1
-            time.sleep(90)
-            # Re-create session
-            session = requests.Session()
-            session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            try:
-                session.get('https://web.pcc.gov.tw/prkms/tender/common/bulletion/indexBulletion', timeout=15)
-                solve_captcha(session)
-            except Exception:
-                print(f"  [{i+1}] Recovery failed, will retry next iteration")
-        except Exception as e:
-            errors += 1
-            if (i + 1) % 20 == 0:
-                print(f"  [{i+1}] ERROR: {str(e)[:60]}")
 
         # Rate limit: 1.5s between requests, 15s pause every 40
         if (i + 1) % 40 == 0:

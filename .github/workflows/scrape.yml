@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: pip install requests Pillow
+        run: pip install requests Pillow curl_cffi scipy numpy
 
       - name: Run scraper
         env:
