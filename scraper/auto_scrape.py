@@ -12,6 +12,24 @@ SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNoY2x4Y2JtZHpnZG96bGR1ZnpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM5MTcwMzEsImV4cCI6MjA4OTQ5MzAzMX0.X50CLwSq1PRDDMFlsGKlSsi-n52JlZC55drAoiddo1I"
 
 
+def fetch_https(session, url, max_redirects=5):
+    """Fetch URL forcing HTTPS on all redirects."""
+    if url.startswith('http://'):
+        url = url.replace('http://', 'https://', 1)
+    for _ in range(max_redirects):
+        r = session.get(url, allow_redirects=False, timeout=20)
+        if r.status_code in (301, 302, 303, 307, 308):
+            loc = r.headers.get('Location', '')
+            if loc.startswith('http://'):
+                loc = loc.replace('http://', 'https://', 1)
+            elif loc.startswith('/'):
+                loc = 'https://web.pcc.gov.tw' + loc
+            url = loc
+            continue
+        return r.text
+    return r.text
+
+
 def count_colored_pixels(img, x_start=0, x_end=None):
     if x_end is None:
         x_end = img.width
@@ -31,11 +49,9 @@ def count_colored_pixels(img, x_start=0, x_end=None):
 
 def solve_captcha(session):
     """Solve PCC poker CAPTCHA using color pixel counting."""
-    r = session.get(
-        'https://web.pcc.gov.tw/tps/atm/AtmAwardWithoutSso/QueryAtmAwardDetail?pkAtmMain=NTE3Njg3MDM=',
-        timeout=15
+    html = fetch_https(session,
+        'https://web.pcc.gov.tw/tps/atm/AtmAwardWithoutSso/QueryAtmAwardDetail?pkAtmMain=NTE3Njg3MDM='
     )
-    html = r.text
     if '驗證碼' not in html:
         return True
 
@@ -204,14 +220,7 @@ def main():
             continue
 
         try:
-            # Ensure HTTPS
-            if url.startswith('http://'):
-                url = url.replace('http://', 'https://', 1)
-            r = session.get(url, allow_redirects=True, timeout=20)
-            # If redirected to HTTP, force HTTPS
-            if r.url.startswith('http://'):
-                r = session.get(r.url.replace('http://', 'https://', 1), timeout=20)
-            html = r.text
+            html = fetch_https(session, url)
 
             if '驗證碼' in html:
                 captcha_count += 1
@@ -222,8 +231,7 @@ def main():
                     errors += 1
                     continue
                 # Retry the page
-                r = session.get(url, allow_redirects=True, timeout=15)
-                html = r.text
+                html = fetch_https(session, url)
                 if '驗證碼' in html:
                     errors += 1
                     continue
@@ -252,14 +260,18 @@ def main():
             if (i + 1) % 20 == 0:
                 print(f"  [{i+1}/{len(all_records)}] ok={success} err={errors} captcha={captcha_count} | {record['case_no']}: budget={data['budget']}")
 
-        except requests.exceptions.ConnectionError:
-            print(f"  [{i+1}] Connection error (IP blocked?), waiting 60s...")
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
+            print(f"  [{i+1}] Connection error (IP blocked?), waiting 90s...")
             errors += 1
-            time.sleep(60)
+            time.sleep(90)
             # Re-create session
             session = requests.Session()
             session.headers['User-Agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-            solve_captcha(session)
+            try:
+                session.get('https://web.pcc.gov.tw/prkms/tender/common/bulletion/indexBulletion', timeout=15)
+                solve_captcha(session)
+            except Exception:
+                print(f"  [{i+1}] Recovery failed, will retry next iteration")
         except Exception as e:
             errors += 1
             if (i + 1) % 20 == 0:
