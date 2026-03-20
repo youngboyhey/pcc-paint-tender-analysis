@@ -1,5 +1,6 @@
-"""Full auto scraper: solve CAPTCHA + fetch all vendor history details
-Uses curl_cffi for TLS fingerprint impersonation and scipy for CAPTCHA solving."""
+"""Full auto scraper: inline CAPTCHA solving per detail page.
+Uses curl_cffi for TLS fingerprint impersonation and scipy for CAPTCHA solving.
+Each detail page triggers its own CAPTCHA - we solve it inline and follow the redirect."""
 import re
 import io
 import time
@@ -50,26 +51,20 @@ def analyze_card(img):
     return color, max(rb, bb), max(int(np.sum(red_mask)), int(np.sum(black_mask)))
 
 
-def solve_captcha(session):
-    """Solve PCC poker CAPTCHA using color + blob detection."""
-    html = fetch_https(session,
-        f'{PCC_BASE}/tps/atm/AtmAwardWithoutSso/QueryAtmAwardDetail?pkAtmMain=NTE3Njg3MDM=')
-    if '驗證碼' not in html:
-        return True  # No CAPTCHA
-
-    ans_match = re.search(r'(/tps/validate/init\?poker=answer[^"]*)', html)
-    q_ids = re.findall(r'/tps/validate/init\?poker=question&(?:amp;)?id=([^"&\s]+)', html)
-    id_match = re.search(r'name="id"\s+value="([^"]+)"', html)
-    csrf_match = re.search(r'name="_csrf"\s+value="([^"]+)"', html)
+def solve_captcha_inline(session, captcha_html):
+    """Solve CAPTCHA from the HTML of a detail page. Returns redirect URL or None."""
+    ans_match = re.search(r'(/tps/validate/init\?poker=answer[^"]*)', captcha_html)
+    q_ids = re.findall(r'/tps/validate/init\?poker=question&(?:amp;)?id=([^"&\s]+)', captcha_html)
+    id_match = re.search(r'name="id"\s+value="([^"]+)"', captcha_html)
+    csrf_match = re.search(r'name="_csrf"\s+value="([^"]+)"', captcha_html)
 
     if not all([ans_match, q_ids, id_match, csrf_match]):
-        return False
+        return None
 
     # Get answer image (2 cards side by side)
     ans_url = PCC_BASE + ans_match.group(1).replace('&amp;', '&')
     ans_img = Image.open(io.BytesIO(session.get(ans_url, timeout=10).content))
     w, h = ans_img.width, ans_img.height
-
     a1 = analyze_card(ans_img.crop((0, 0, w // 2, h)))
     a2 = analyze_card(ans_img.crop((w // 2, 0, w, h)))
 
@@ -80,7 +75,7 @@ def solve_captcha(session):
         q_img = Image.open(io.BytesIO(session.get(q_url, timeout=10).content))
         questions.append((qid, *analyze_card(q_img)))
 
-    # Match: same color + same symbol count (or closest)
+    # Match: same color + same symbol count (or closest pixel count)
     matches = []
     used = set()
     for ac, an, ap in [a1, a2]:
@@ -93,9 +88,9 @@ def solve_captcha(session):
             used.add(best[0])
 
     if len(matches) < 2:
-        return False
+        return None
 
-    # Submit CAPTCHA (don't follow redirect - it goes to HTTP)
+    # Submit CAPTCHA
     data = '&'.join([f'choose={m}' for m in matches])
     data += f'&id={id_match.group(1)}&_csrf={csrf_match.group(1)}'
     sr = session.post(
@@ -106,16 +101,33 @@ def solve_captcha(session):
         timeout=15
     )
 
-    # Follow redirect forcing HTTPS
+    # Success = redirect (302); Failure = 200 (shows new CAPTCHA)
     if sr.status_code in (301, 302, 303):
         loc = sr.headers.get('location', sr.headers.get('Location', ''))
         if loc.startswith('http://'):
             loc = loc.replace('http://', 'https://', 1)
         elif loc.startswith('/'):
             loc = PCC_BASE + loc
-        r2 = session.get(loc, timeout=15)
-        return '預算金額' in r2.text
-    return '預算金額' in sr.text
+        return loc
+    return None
+
+
+def fetch_detail_with_captcha(session, url, max_attempts=5):
+    """Fetch a detail page, solving inline CAPTCHA if needed. Returns HTML or None."""
+    for attempt in range(max_attempts):
+        html = fetch_https(session, url)
+        if '驗證碼' not in html:
+            return html  # No CAPTCHA, got the page directly
+
+        # Solve CAPTCHA inline
+        redirect_url = solve_captcha_inline(session, html)
+        if redirect_url:
+            result_html = fetch_https(session, redirect_url)
+            if '驗證碼' not in result_html:
+                return result_html
+        # Wrong answer or still CAPTCHA - retry with fresh page
+        time.sleep(1)
+    return None
 
 
 def extract_detail(html, vendor_name):
@@ -200,35 +212,13 @@ def main():
             break
         offset += 1000
 
-    # Batch limit: only process 40 records per run to avoid IP block
-    BATCH_SIZE = 40
-    if len(all_records) > BATCH_SIZE:
-        all_records = all_records[:BATCH_SIZE]
-
-    print(f"Records needing data: {len(all_records)} (batch of {BATCH_SIZE})")
+    print(f"Records needing data: {len(all_records)}")
     if not all_records:
         print("All records already have data!")
         return
 
     # Create curl_cffi session (Chrome impersonation)
     session = requests.Session(impersonate='chrome')
-
-    print("Solving CAPTCHA...")
-    for attempt in range(3):
-        try:
-            if solve_captcha(session):
-                print(f"  CAPTCHA solved on attempt {attempt + 1}!")
-                break
-            else:
-                print(f"  Attempt {attempt + 1} failed, retrying...")
-                time.sleep(5)
-        except Exception as e:
-            print(f"  Attempt {attempt + 1} error: {e}")
-            time.sleep(10)
-            session = requests.Session(impersonate='chrome')
-    else:
-        print("Failed to solve CAPTCHA after 3 attempts, will retry next cron run")
-        return
 
     # Supabase update headers
     supa_headers = {
@@ -240,7 +230,6 @@ def main():
 
     success = 0
     errors = 0
-    captcha_count = 0
     consecutive_errors = 0
 
     for i, record in enumerate(all_records):
@@ -249,28 +238,16 @@ def main():
             continue
 
         try:
-            html = fetch_https(session, url)
+            html = fetch_detail_with_captcha(session, url, max_attempts=5)
 
-            if '驗證碼' in html:
-                captcha_count += 1
-                print(f"  [{i+1}] CAPTCHA triggered, re-solving...")
-                time.sleep(3)
-                if not solve_captcha(session):
-                    print(f"  [{i+1}] CAPTCHA re-solve failed, skipping")
-                    errors += 1
-                    consecutive_errors += 1
-                    if consecutive_errors >= 10:
-                        print(f"  10 consecutive errors, stopping. Will resume next run.")
-                        break
-                    continue
-                html = fetch_https(session, url)
-                if '驗證碼' in html:
-                    errors += 1
-                    consecutive_errors += 1
-                    if consecutive_errors >= 10:
-                        print(f"  10 consecutive errors, stopping. Will resume next run.")
-                        break
-                    continue
+            if html is None:
+                errors += 1
+                consecutive_errors += 1
+                print(f"  [{i+1}] Failed to solve CAPTCHA after 5 attempts")
+                if consecutive_errors >= 15:
+                    print(f"  15 consecutive errors, stopping.")
+                    break
+                continue
 
             data = extract_detail(html, record['vendor_name'])
 
@@ -286,10 +263,6 @@ def main():
                 if data['is_winner'] is not None:
                     update['is_winner'] = data['is_winner']
 
-                # If page loaded but no budget found, mark with 0 to avoid re-fetching
-                if not update and '預算金額' not in html:
-                    update['budget'] = 0
-
                 if update:
                     std_requests.patch(
                         f'{SUPABASE_URL}/rest/v1/vendor_history?id=eq.{record["id"]}',
@@ -300,39 +273,27 @@ def main():
             consecutive_errors = 0
             success += 1
             if (i + 1) % 10 == 0:
-                print(f"  [{i+1}/{len(all_records)}] ok={success} err={errors} captcha={captcha_count} | {record['case_no']}: budget={data['budget']}")
+                print(f"  [{i+1}/{len(all_records)}] ok={success} err={errors} | {record['case_no']}: budget={data['budget']}")
 
-        except (requests.RequestsError, Exception) as e:
+        except Exception as e:
             err_str = str(e)[:120]
             consecutive_errors += 1
             errors += 1
-            print(f"  [{i+1}] ERROR ({consecutive_errors} consecutive): {err_str}")
+            print(f"  [{i+1}] ERROR ({consecutive_errors}x): {err_str}")
 
-            if consecutive_errors >= 10:
-                print(f"  10 consecutive errors, stopping. Will resume next run.")
+            if consecutive_errors >= 15:
+                print(f"  15 consecutive errors, stopping.")
                 break
 
-            if 'Connection' in err_str or 'Timeout' in err_str or 'timed out' in err_str:
-                wait_time = 90 if consecutive_errors < 5 else 300
-                print(f"  Connection error, waiting {wait_time}s...")
-                time.sleep(wait_time)
+            if 'Connection' in err_str or 'Timeout' in err_str or 'timed out' in err_str or 'reset' in err_str.lower():
+                print(f"  Connection error, waiting 60s...")
+                time.sleep(60)
                 session = requests.Session(impersonate='chrome')
-                try:
-                    if solve_captcha(session):
-                        print("  Re-solved CAPTCHA after reconnect")
-                    else:
-                        print("  CAPTCHA re-solve failed after reconnect")
-                except Exception as ce:
-                    print(f"  CAPTCHA re-solve error: {str(ce)[:60]}")
 
-        # Rate limit: 5s between requests, 30s pause every 20
-        if (i + 1) % 20 == 0:
-            print(f"  Pausing 30s after {i+1} records...")
-            time.sleep(30)
-        else:
-            time.sleep(5)
+        # Rate limit: 3s between records
+        time.sleep(3)
 
-    print(f"\nDone! success={success}, errors={errors}, captchas={captcha_count}")
+    print(f"\nDone! success={success}, errors={errors}, total_processed={success+errors}")
 
 
 if __name__ == '__main__':
