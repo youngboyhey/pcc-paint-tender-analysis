@@ -1,0 +1,16 @@
+name: Reset Incomplete Records
+
+on:
+  workflow_dispatch:
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install requests
+        run: pip install requests
+      - name: Reset incomplete records
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python scraper/reset_incomplete.py
