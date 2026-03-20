@@ -303,11 +303,12 @@ def main():
                 except Exception as ce:
                     print(f"  CAPTCHA re-solve error: {str(ce)[:60]}")
 
-        # Rate limit: 2s between requests, 20s pause every 30
-        if (i + 1) % 30 == 0:
-            time.sleep(20)
+        # Rate limit: 5s between requests, 30s pause every 20
+        if (i + 1) % 20 == 0:
+            print(f"  Pausing 30s after {i+1} records...")
+            time.sleep(30)
         else:
-            time.sleep(2)
+            time.sleep(5)
 
     print(f"\nDone! success={success}, errors={errors}, captchas={captcha_count}")
 
