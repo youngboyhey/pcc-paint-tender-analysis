@@ -218,6 +218,7 @@
         <!-- Panel 2: Vendors -->
         <div class="panel" id="panel-vendors">
             <div class="card">
+                <h2>🏢 廠商全歷史投標統計（105~115年所有標案）</h2>
                 <div class="search-box">
                     <input type="text" id="searchVendor" placeholder="🔍 搜尋廠商名稱...">
                 </div>
@@ -225,6 +226,14 @@
                     <div class="loading-spinner"></div>
                     <p>載入資料中...</p>
                 </div>
+            </div>
+            <div class="card">
+                <h2>📊 各廠商得標率比較</h2>
+                <div style="position:relative;height:400px;"><canvas id="chartWinRate"></canvas></div>
+            </div>
+            <div class="card">
+                <h2>💰 各廠商總決標金額比較</h2>
+                <div style="position:relative;height:400px;"><canvas id="chartAwardAmount"></canvas></div>
             </div>
         </div>
 
@@ -240,6 +249,7 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script>
         const SUPABASE_URL = "https://chclxcbmdzgdozldufzs.supabase.co";
         const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNoY2x4Y2JtZHpnZG96bGR1ZnpzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM5MTcwMzEsImV4cCI6MjA4OTQ5MzAzMX0.X50CLwSq1PRDDMFlsGKlSsi-n52JlZC55drAoiddo1I";
@@ -308,41 +318,130 @@
             document.getElementById("tenderTable").innerHTML = filtered.length ? html : '<p style="text-align:center;color:#999">無符合資料</p>';
         }
 
-        // Render vendor summary
+        // Render vendor summary (from ALL vendor_history, not just 8 tenders)
+        let chartWinRate = null;
+        let chartAwardAmount = null;
+
         function renderVendors(filter = "") {
             const vendorMap = {};
-            biddersData.forEach(b => {
-                if (!vendorMap[b.company_name]) {
-                    vendorMap[b.company_name] = { name: b.company_name, total: 0, wins: 0, totalBid: 0, totalWinBid: 0 };
+            vendorHistoryData.forEach(h => {
+                const name = h.vendor_name;
+                if (!vendorMap[name]) {
+                    vendorMap[name] = { name, total: 0, wins: 0, losses: 0, totalBudget: 0, totalAward: 0 };
                 }
-                vendorMap[b.company_name].total++;
-                vendorMap[b.company_name].totalBid += (b.bid_amount || 0);
-                if (b.is_winner) {
-                    vendorMap[b.company_name].wins++;
-                    vendorMap[b.company_name].totalWinBid += (b.bid_amount || 0);
-                }
+                vendorMap[name].total++;
+                vendorMap[name].totalBudget += (h.budget || 0);
+                vendorMap[name].totalAward += (h.award_price || 0);
+                if (h.is_winner === true) vendorMap[name].wins++;
+                else if (h.is_winner === false) vendorMap[name].losses++;
             });
 
             let vendors = Object.values(vendorMap)
                 .filter(v => !filter || v.name.toLowerCase().includes(filter.toLowerCase()))
-                .sort((a, b) => b.wins - a.wins);
+                .sort((a, b) => b.wins - a.wins || (b.wins/(b.wins+b.losses||1)) - (a.wins/(a.wins+a.losses||1)));
 
             const html = `<table>
                 <thead><tr>
                     <th>#</th><th>廠商名稱</th><th>投標次數</th><th>得標次數</th>
-                    <th>得標率</th><th>總投標金額</th><th>總得標金額</th>
+                    <th>得標率</th><th>總預算金額</th><th>總決標金額</th>
                 </tr></thead>
-                <tbody>${vendors.map((v, i) => `<tr>
+                <tbody>${vendors.map((v, i) => {
+                    const known = v.wins + v.losses;
+                    const rate = known > 0 ? Math.round(v.wins / known * 100) : null;
+                    return `<tr>
                     <td>${i + 1}</td>
                     <td><span class="vendor-link" data-vendor="${v.name}">${v.name}</span></td>
                     <td>${v.total}</td>
                     <td>${v.wins}</td>
-                    <td><span class="badge ${v.wins > 0 ? 'badge-win' : 'badge-lose'}">${v.total ? Math.round(v.wins/v.total*100) : 0}%</span></td>
-                    <td class="amount">${fmt(v.totalBid)}</td>
-                    <td class="amount">${fmt(v.totalWinBid)}</td>
-                </tr>`).join('')}</tbody>
+                    <td><span class="badge ${rate !== null && rate > 0 ? 'badge-win' : 'badge-lose'}">${rate !== null ? rate + '%' : '-'}</span></td>
+                    <td class="amount">${fmt(v.totalBudget)}</td>
+                    <td class="amount">${fmt(v.totalAward)}</td>
+                </tr>`;
+                }).join('')}</tbody>
             </table>`;
             document.getElementById("vendorTable").innerHTML = vendors.length ? html : '<p style="text-align:center;color:#999">無符合資料</p>';
+
+            // Render charts
+            renderVendorCharts(vendors);
+        }
+
+        function renderVendorCharts(vendors) {
+            const labels = vendors.map(v => v.name);
+            const winRates = vendors.map(v => {
+                const known = v.wins + v.losses;
+                return known > 0 ? Math.round(v.wins / known * 100) : 0;
+            });
+            const awardAmounts = vendors.map(v => v.totalAward);
+
+            // Color scale: green (high rate) → red (low rate)
+            const rateColors = winRates.map(r => {
+                if (r >= 60) return '#059669';
+                if (r >= 40) return '#d97706';
+                if (r > 0) return '#ea580c';
+                return '#dc2626';
+            });
+
+            // Chart A: Win Rate
+            if (chartWinRate) chartWinRate.destroy();
+            const ctxA = document.getElementById('chartWinRate');
+            if (ctxA) {
+                chartWinRate = new Chart(ctxA, {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: '得標率 (%)',
+                            data: winRates,
+                            backgroundColor: rateColors,
+                            borderRadius: 6,
+                        }]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: { callbacks: { label: ctx => `${ctx.parsed.x}%` } }
+                        },
+                        scales: {
+                            x: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } },
+                            y: { ticks: { font: { size: 12 } } }
+                        }
+                    }
+                });
+            }
+
+            // Chart B: Award Amount
+            if (chartAwardAmount) chartAwardAmount.destroy();
+            const ctxB = document.getElementById('chartAwardAmount');
+            if (ctxB) {
+                chartAwardAmount = new Chart(ctxB, {
+                    type: 'bar',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: '總決標金額',
+                            data: awardAmounts,
+                            backgroundColor: '#3b82f6',
+                            borderRadius: 6,
+                        }]
+                    },
+                    options: {
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: { display: false },
+                            tooltip: { callbacks: { label: ctx => fmt(ctx.parsed.x) + ' 元' } }
+                        },
+                        scales: {
+                            x: { beginAtZero: true, ticks: { callback: v => (v / 10000).toLocaleString() + '萬' } },
+                            y: { ticks: { font: { size: 12 } } }
+                        }
+                    }
+                });
+            }
         }
 
         // Show vendor history
@@ -420,7 +519,7 @@
                 [tendersData, biddersData, vendorHistoryData] = await Promise.all([
                     supaFetch("tenders", "select=*&order=tender_year.desc"),
                     supaFetch("bidders", "select=*"),
-                    supaFetch("vendor_history", "select=*&order=tender_year.desc"),
+                    supaFetch("vendor_history", "select=*&order=tender_year.desc&limit=1000"),
                 ]);
                 updateStats();
                 renderTenders();
