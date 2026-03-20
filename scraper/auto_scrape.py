@@ -187,8 +187,6 @@ def main():
         reset_payload = {'budget': None, 'base_price': None, 'award_price': None, 'is_winner': None}
         for condition, label in [
             ('budget=eq.0', 'budget=0 placeholder'),
-            ('budget=not.is.null&base_price=is.null', 'missing base_price'),
-            ('budget=not.is.null&is_winner=is.null', 'missing is_winner'),
         ]:
             r = std_requests.patch(
                 f'{SUPABASE_URL}/rest/v1/vendor_history?{condition}',
