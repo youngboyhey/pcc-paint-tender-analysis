@@ -164,6 +164,28 @@ def extract_detail(html, vendor_name):
 def main():
     import requests as std_requests  # For Supabase (doesn't need TLS impersonation)
 
+    # First, reset incomplete records (budget!=null but missing other fields)
+    if SERVICE_KEY:
+        reset_headers = {
+            'apikey': SERVICE_KEY,
+            'Authorization': f'Bearer {SERVICE_KEY}',
+            'Content-Type': 'application/json',
+            'Prefer': 'count=exact'
+        }
+        reset_payload = {'budget': None, 'base_price': None, 'award_price': None, 'is_winner': None}
+        for condition, label in [
+            ('budget=eq.0', 'budget=0 placeholder'),
+            ('budget=not.is.null&base_price=is.null', 'missing base_price'),
+            ('budget=not.is.null&award_price=is.null', 'missing award_price'),
+            ('budget=not.is.null&is_winner=is.null', 'missing is_winner'),
+        ]:
+            r = std_requests.patch(
+                f'{SUPABASE_URL}/rest/v1/vendor_history?{condition}',
+                headers=reset_headers, json=reset_payload)
+            ct = r.headers.get('content-range', '*/0').split('/')[-1]
+            if ct and ct != '0' and ct != '*':
+                print(f"  Reset {ct} records ({label})")
+
     # Get records needing data
     headers = {'apikey': ANON_KEY, 'Authorization': f'Bearer {ANON_KEY}'}
     all_records = []
@@ -178,7 +200,12 @@ def main():
             break
         offset += 1000
 
-    print(f"Records needing data: {len(all_records)}")
+    # Batch limit: only process 40 records per run to avoid IP block
+    BATCH_SIZE = 40
+    if len(all_records) > BATCH_SIZE:
+        all_records = all_records[:BATCH_SIZE]
+
+    print(f"Records needing data: {len(all_records)} (batch of {BATCH_SIZE})")
     if not all_records:
         print("All records already have data!")
         return
@@ -187,7 +214,7 @@ def main():
     session = requests.Session(impersonate='chrome')
 
     print("Solving CAPTCHA...")
-    for attempt in range(10):
+    for attempt in range(3):
         try:
             if solve_captcha(session):
                 print(f"  CAPTCHA solved on attempt {attempt + 1}!")
@@ -197,15 +224,10 @@ def main():
                 time.sleep(5)
         except Exception as e:
             print(f"  Attempt {attempt + 1} error: {e}")
-            if 'Connection' in str(e) or 'reset' in str(e).lower():
-                wait = 60 * (attempt + 1)  # 60s, 120s, 180s, ...
-                print(f"  IP may be blocked, waiting {wait}s...")
-                time.sleep(wait)
-                session = requests.Session(impersonate='chrome')
-            else:
-                time.sleep(10)
+            time.sleep(10)
+            session = requests.Session(impersonate='chrome')
     else:
-        print("Failed to solve CAPTCHA after 10 attempts")
+        print("Failed to solve CAPTCHA after 3 attempts, will retry next cron run")
         return
 
     # Supabase update headers
