@@ -213,6 +213,7 @@ def main():
     success = 0
     errors = 0
     captcha_count = 0
+    consecutive_errors = 0
 
     for i, record in enumerate(all_records):
         url = record.get('detail_url')
@@ -229,10 +230,18 @@ def main():
                 if not solve_captcha(session):
                     print(f"  [{i+1}] CAPTCHA re-solve failed, skipping")
                     errors += 1
+                    consecutive_errors += 1
+                    if consecutive_errors >= 10:
+                        print(f"  10 consecutive errors, stopping. Will resume next run.")
+                        break
                     continue
                 html = fetch_https(session, url)
                 if '驗證碼' in html:
                     errors += 1
+                    consecutive_errors += 1
+                    if consecutive_errors >= 10:
+                        print(f"  10 consecutive errors, stopping. Will resume next run.")
+                        break
                     continue
 
             data = extract_detail(html, record['vendor_name'])
@@ -248,6 +257,11 @@ def main():
                     update['award_price'] = data['award_price']
                 if data['is_winner'] is not None:
                     update['is_winner'] = data['is_winner']
+
+                # If page loaded but no budget found, mark with 0 to avoid re-fetching
+                if not update and '預算金額' not in html:
+                    update['budget'] = 0
+
                 if update:
                     std_requests.patch(
                         f'{SUPABASE_URL}/rest/v1/vendor_history?id=eq.{record["id"]}',
@@ -255,30 +269,39 @@ def main():
                         json=update
                     )
 
+            consecutive_errors = 0
             success += 1
-            if (i + 1) % 20 == 0:
+            if (i + 1) % 10 == 0:
                 print(f"  [{i+1}/{len(all_records)}] ok={success} err={errors} captcha={captcha_count} | {record['case_no']}: budget={data['budget']}")
 
         except (requests.RequestsError, Exception) as e:
-            err_str = str(e)[:80]
+            err_str = str(e)[:120]
+            consecutive_errors += 1
+            errors += 1
+            print(f"  [{i+1}] ERROR ({consecutive_errors} consecutive): {err_str}")
+
+            if consecutive_errors >= 10:
+                print(f"  10 consecutive errors, stopping. Will resume next run.")
+                break
+
             if 'Connection' in err_str or 'Timeout' in err_str or 'timed out' in err_str:
-                print(f"  [{i+1}] Connection error, waiting 90s...")
-                time.sleep(90)
+                wait_time = 90 if consecutive_errors < 5 else 300
+                print(f"  Connection error, waiting {wait_time}s...")
+                time.sleep(wait_time)
                 session = requests.Session(impersonate='chrome')
                 try:
-                    solve_captcha(session)
-                except Exception:
-                    pass
-            else:
-                if (i + 1) % 20 == 0:
-                    print(f"  [{i+1}] ERROR: {err_str}")
-            errors += 1
+                    if solve_captcha(session):
+                        print("  Re-solved CAPTCHA after reconnect")
+                    else:
+                        print("  CAPTCHA re-solve failed after reconnect")
+                except Exception as ce:
+                    print(f"  CAPTCHA re-solve error: {str(ce)[:60]}")
 
-        # Rate limit: 1.5s between requests, 15s pause every 40
-        if (i + 1) % 40 == 0:
-            time.sleep(15)
+        # Rate limit: 2s between requests, 20s pause every 30
+        if (i + 1) % 30 == 0:
+            time.sleep(20)
         else:
-            time.sleep(1.5)
+            time.sleep(2)
 
     print(f"\nDone! success={success}, errors={errors}, captchas={captcha_count}")
 
