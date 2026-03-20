@@ -16,13 +16,6 @@ jobs:
       - name: Install dependencies
         run: pip install requests Pillow curl_cffi scipy numpy
 
-      - name: Run XML scraper (no CAPTCHA needed)
-        env:
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: |
-          cd scraper
-          python xml_scrape.py
-
       - name: Run detail scraper (CAPTCHA + budget/base_price)
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
