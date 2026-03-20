@@ -187,19 +187,25 @@ def main():
     session = requests.Session(impersonate='chrome')
 
     print("Solving CAPTCHA...")
-    for attempt in range(5):
+    for attempt in range(10):
         try:
             if solve_captcha(session):
                 print(f"  CAPTCHA solved on attempt {attempt + 1}!")
                 break
             else:
                 print(f"  Attempt {attempt + 1} failed, retrying...")
-                time.sleep(3)
+                time.sleep(5)
         except Exception as e:
             print(f"  Attempt {attempt + 1} error: {e}")
-            time.sleep(5)
+            if 'Connection' in str(e) or 'reset' in str(e).lower():
+                wait = 60 * (attempt + 1)  # 60s, 120s, 180s, ...
+                print(f"  IP may be blocked, waiting {wait}s...")
+                time.sleep(wait)
+                session = requests.Session(impersonate='chrome')
+            else:
+                time.sleep(10)
     else:
-        print("Failed to solve CAPTCHA after 5 attempts")
+        print("Failed to solve CAPTCHA after 10 attempts")
         return
 
     # Supabase update headers
